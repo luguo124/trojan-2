@@ -16,12 +16,24 @@ func userRouter(router *gin.Engine) {
 	user := router.Group("/trojan/user")
 	{
 		user.GET("", func(c *gin.Context) {
-			c.JSON(200, controller.UserList())
+			requestUser := RequestUsername(c)
+			if requestUser == "admin" {
+				c.JSON(200, controller.UserList(""))
+			} else {
+				c.JSON(200, controller.UserList(requestUser))
+			}
 		})
 		user.POST("", func(c *gin.Context) {
 			username := c.PostForm("username")
 			password := c.PostForm("password")
 			c.JSON(200, controller.CreateUser(username, password))
+		})
+		user.POST("/update", func(c *gin.Context) {
+			sid := c.PostForm("id")
+			username := c.PostForm("username")
+			password := c.PostForm("password")
+			id, _ := strconv.Atoi(sid)
+			c.JSON(200, controller.UpdateUser(uint(id), username, password))
 		})
 		user.DELETE("", func(c *gin.Context) {
 			stringId := c.Query("id")
@@ -29,6 +41,32 @@ func userRouter(router *gin.Engine) {
 			c.JSON(200, controller.DelUser(uint(id)))
 		})
 	}
+}
+
+func trojanRouter(router *gin.Engine) {
+	router.POST("/trojan/start", func(c *gin.Context) {
+		c.JSON(200, controller.Start())
+	})
+	router.POST("/trojan/stop", func(c *gin.Context) {
+		c.JSON(200, controller.Stop())
+	})
+	router.POST("/trojan/restart", func(c *gin.Context) {
+		c.JSON(200, controller.Restart())
+	})
+	router.GET("/trojan/loglevel", func(c *gin.Context) {
+		c.JSON(200, controller.GetLogLevel())
+	})
+	router.POST("/trojan/update", func(c *gin.Context) {
+		c.JSON(200, controller.Update())
+	})
+	router.POST("/trojan/loglevel", func(c *gin.Context) {
+		slevel := c.DefaultPostForm("level", "1")
+		level, _ := strconv.Atoi(slevel)
+		c.JSON(200, controller.SetLogLevel(level))
+	})
+	router.GET("/trojan/log", func(c *gin.Context) {
+		controller.Log(c)
+	})
 }
 
 func dataRouter(router *gin.Engine) {
@@ -55,6 +93,9 @@ func commonRouter(router *gin.Engine) {
 		common.GET("/version", func(c *gin.Context) {
 			c.JSON(200, controller.Version())
 		})
+		common.GET("/serverInfo", func(c *gin.Context) {
+			c.JSON(200, controller.ServerInfo())
+		})
 		common.POST("/loginInfo", func(c *gin.Context) {
 			c.JSON(200, controller.SetLoginInfo(c.PostForm("title")))
 		})
@@ -78,6 +119,7 @@ func Start(port int, isSSL bool) {
 	router.Use(gzip.Gzip(gzip.DefaultCompression))
 	staticRouter(router)
 	router.Use(Auth(router).MiddlewareFunc())
+	trojanRouter(router)
 	userRouter(router)
 	dataRouter(router)
 	commonRouter(router)

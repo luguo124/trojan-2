@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	mysqlDriver "github.com/go-sql-driver/mysql"
+	"io/ioutil"
+	"log"
+
 	// mysql sql驱动
 	_ "github.com/go-sql-driver/mysql"
 	"strconv"
@@ -16,9 +20,10 @@ type Mysql struct {
 	Enabled    bool   `json:"enabled"`
 	ServerAddr string `json:"server_addr"`
 	ServerPort int    `json:"server_port"`
-	Database   string `json:"db"`
+	Database   string `json:"database"`
 	Username   string `json:"username"`
 	Password   string `json:"password"`
+	Cafile     string `json:"cafile"`
 }
 
 // User 用户表记录结构体
@@ -33,6 +38,8 @@ type User struct {
 
 // GetDB 获取mysql数据库连接
 func (mysql *Mysql) GetDB() *sql.DB {
+	// 屏蔽mysql驱动包的日志输出
+	mysqlDriver.SetLogger(log.New(ioutil.Discard, "", 0))
 	conn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", mysql.Username, mysql.Password, mysql.ServerAddr, mysql.ServerPort, mysql.Database)
 	db, err := sql.Open("mysql", conn)
 	if err != nil {
@@ -71,6 +78,25 @@ func (mysql *Mysql) CreateUser(username string, password string) error {
 	defer db.Close()
 	encryPass := sha256.Sum224([]byte(password))
 	if _, err := db.Exec(fmt.Sprintf("INSERT INTO users(username, password, quota) VALUES ('%s', '%x', -1);", username, encryPass)); err != nil {
+		fmt.Println(err)
+		return err
+	}
+	if err := SetValue(username+"_pass", password); err != nil {
+		fmt.Println(err)
+		return err
+	}
+	return nil
+}
+
+// UpdateUser 更新Trojan用户名和密码
+func (mysql *Mysql) UpdateUser(id uint, username string, password string) error {
+	db := mysql.GetDB()
+	if db == nil {
+		return errors.New("can't connect mysql")
+	}
+	defer db.Close()
+	encryPass := sha256.Sum224([]byte(password))
+	if _, err := db.Exec(fmt.Sprintf("UPDATE users SET username='%s', password='%x' WHERE id=%d;", username, encryPass, id)); err != nil {
 		fmt.Println(err)
 		return err
 	}
@@ -128,6 +154,28 @@ func (mysql *Mysql) CleanData(id uint) error {
 		return err
 	}
 	return nil
+}
+
+// GetUserByName 通过用户名来获取用户
+func (mysql *Mysql) GetUserByName(name string) *User {
+	db := mysql.GetDB()
+	if db == nil {
+		return nil
+	}
+	defer db.Close()
+	var (
+		username   string
+		originPass string
+		download   uint64
+		upload     uint64
+		quota      int64
+		id         uint
+	)
+	row := db.QueryRow(fmt.Sprintf("SELECT * FROM users WHERE username='%s'", name))
+	if err := row.Scan(&id, &username, &originPass, &quota, &download, &upload); err != nil {
+		return nil
+	}
+	return &User{ID: id, Username: username, Password: originPass, Download: download, Upload: upload, Quota: quota}
 }
 
 // GetData 获取用户记录

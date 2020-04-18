@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	dockerInstallUrl = "https://git.io/docker-install"
-	mysqlDodkcerRun  = "docker run --name trojan-mysql --restart=always -p %d:3306 -v /home/mysql:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=%s -e MYSQL_ROOT_HOST=%% -e MYSQL_DATABASE=trojan -d mysql/mysql-server:5.7"
+	dockerInstallUrl1 = "https://get.docker.com"
+	dockerInstallUrl2 = "https://git.io/docker-install"
+	dbDockerRun       = "docker run --name trojan-mariadb --restart=always -p %d:3306 -v /home/mariadb:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=%s -e MYSQL_ROOT_HOST=%% -e MYSQL_DATABASE=trojan -d mariadb:10.2"
 )
 
 // InstallMenu 安装目录
@@ -30,36 +31,44 @@ func InstallMenu() {
 	default:
 		return
 	}
-	Restart()
 }
 
 // InstallDocker 安装docker
 func InstallDocker() {
 	if !util.CheckCommandExists("docker") {
-		util.RunWebShell(dockerInstallUrl)
+		util.RunWebShell(dockerInstallUrl1)
+		if !util.CheckCommandExists("docker") {
+			util.RunWebShell(dockerInstallUrl2)
+		} else {
+			util.ExecCommand("systemctl enable docker")
+			util.ExecCommand("systemctl start docker")
+		}
 		fmt.Println()
 	}
 }
 
 // InstallTrojan 安装trojan
 func InstallTrojan() {
+	fmt.Println()
 	box := packr.New("trojan-install", "../asset")
 	data, err := box.FindString("trojan-install.sh")
 	if err != nil {
 		fmt.Println(err)
 	}
 	util.ExecCommand(data)
+	util.OpenPort(443)
 	util.ExecCommand("systemctl restart trojan")
 	util.ExecCommand("systemctl enable trojan")
-	util.OpenPort(443)
-	fmt.Println()
 }
 
 // InstallTls 安装证书
 func InstallTls() {
 	domain := ""
+	fmt.Println()
 	choice := util.LoopInput("请选择使用证书方式: ", []string{"Let's Encrypt 证书", "自定义证书路径"}, true)
-	if choice == 1 {
+	if choice < 0 {
+		return
+	} else if choice == 1 {
 		localIP := util.GetLocalIP()
 		fmt.Printf("本机ip: %s\n", localIP)
 		for {
@@ -91,7 +100,7 @@ func InstallTls() {
 		util.ExecCommand(fmt.Sprintf("bash /root/.acme.sh/acme.sh --issue -d %s --debug --standalone --keylength ec-256", domain))
 		crtFile := "/root/.acme.sh/" + domain + "_ecc" + "/fullchain.cer"
 		keyFile := "/root/.acme.sh/" + domain + "_ecc" + "/" + domain + ".key"
-		core.WriterTls(crtFile, keyFile)
+		core.WriteTls(crtFile, keyFile)
 	} else if choice == 2 {
 		crtFile := util.Input("请输入证书的cert文件路径: ", "")
 		keyFile := util.Input("请输入证书的key文件路径: ", "")
@@ -103,10 +112,11 @@ func InstallTls() {
 				fmt.Println("输入域名为空!")
 				return
 			}
-			core.WriterTls(crtFile, keyFile)
+			core.WriteTls(crtFile, keyFile)
 		}
 	}
 	core.SetValue("domain", domain)
+	Restart()
 	fmt.Println()
 }
 
@@ -116,25 +126,26 @@ func InstallMysql() {
 		mysql  core.Mysql
 		choice int
 	)
+	fmt.Println()
 	if util.IsExists("/.dockerenv") {
 		choice = 2
 	} else {
-		choice = util.LoopInput("请选择: ", []string{"安装docker版mysql", "输入自定义mysql连接"}, true)
+		choice = util.LoopInput("请选择: ", []string{"安装docker版mysql(mariadb)", "输入自定义mysql连接"}, true)
 	}
 	if choice < 0 {
 		return
 	} else if choice == 1 {
 		mysql = core.Mysql{ServerAddr: "127.0.0.1", ServerPort: util.RandomPort(), Password: util.RandString(5), Username: "root", Database: "trojan"}
 		InstallDocker()
-		fmt.Println(fmt.Sprintf(mysqlDodkcerRun, mysql.ServerPort, mysql.Password))
+		fmt.Println(fmt.Sprintf(dbDockerRun, mysql.ServerPort, mysql.Password))
 		if util.CheckCommandExists("setenforce") {
 			util.ExecCommand("setenforce 0")
 		}
 		util.OpenPort(mysql.ServerPort)
-		util.ExecCommand(fmt.Sprintf(mysqlDodkcerRun, mysql.ServerPort, mysql.Password))
-		fmt.Println("mysql启动中, 请稍等...")
+		util.ExecCommand(fmt.Sprintf(dbDockerRun, mysql.ServerPort, mysql.Password))
+		db := mysql.GetDB()
 		for {
-			db := mysql.GetDB()
+			fmt.Printf("%s mariadb启动中,请稍等...\n", time.Now().Format("2006-01-02 15:04:05"))
 			err := db.Ping()
 			if err == nil {
 				db.Close()
@@ -143,9 +154,9 @@ func InstallMysql() {
 				time.Sleep(2 * time.Second)
 			}
 		}
-		fmt.Println("mysql启动成功!")
+		fmt.Println("mariadb启动成功!")
 	} else if choice == 2 {
-		mysql = core.Mysql{Username: "root"}
+		mysql = core.Mysql{}
 		for {
 			for {
 				mysqlUrl := util.Input("请输入mysql连接地址(格式: host:port), 默认连接地址为127.0.0.1:3306, 使用直接回车, 否则输入自定义连接地址: ",
@@ -163,21 +174,23 @@ func InstallMysql() {
 				mysql.ServerAddr, mysql.ServerPort = urlInfo[0], port
 				break
 			}
-			mysql.Password = util.Input("请输入mysql root用户的密码: ", "")
+			mysql.Username = util.Input("请输入mysql的用户名(回车使用root): ", "root")
+			mysql.Password = util.Input(fmt.Sprintf("请输入mysql %s用户的密码: ", mysql.Username), "")
 			db := mysql.GetDB()
 			if db != nil && db.Ping() == nil {
-				db.Exec("CREATE DATABASE IF NOT EXISTS trojan;")
+				mysql.Database = util.Input("请输入使用的数据库名(不存在可自动创建, 回车使用trojan): ", "trojan")
+				db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", mysql.Database))
 				break
 			} else {
 				fmt.Println("连接mysql失败, 请重新输入")
 			}
 		}
 	}
-	mysql.Database = "trojan"
 	mysql.CreateTable()
-	core.WriterMysql(&mysql)
+	core.WriteMysql(&mysql)
 	if len(mysql.GetData()) == 0 {
 		AddUser()
 	}
+	Restart()
 	fmt.Println()
 }
